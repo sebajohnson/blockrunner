@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Pos = { x: number; y: number };
+type Status = "playing" | "dead";
 
-const W = 10;     // columnas
-const H = 14;     // filas
-const CELL = 34;  // tamaño visual
+const W = 10;
+const H = 14;
+const CELL = 34;
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
@@ -21,9 +22,9 @@ function makeMarks() {
 export default function Game() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [grid] = useState<boolean[][]>(() => makeGrid(true));
+  const [status, setStatus] = useState<Status>("playing");
+  const [grid, setGrid] = useState<boolean[][]>(() => makeGrid(true));
   const [marked, setMarked] = useState<boolean[][]>(() => makeMarks());
-
   const [player, setPlayer] = useState<Pos>(() => ({
     x: Math.floor(W / 2),
     y: H - 2,
@@ -31,6 +32,13 @@ export default function Game() {
 
   const width = useMemo(() => W * CELL, []);
   const height = useMemo(() => H * CELL, []);
+
+  // Regla: si no hay cubo bajo el jugador => dead
+  useEffect(() => {
+    if (status !== "playing") return;
+    const under = grid[player.y]?.[player.x] === true;
+    if (!under) setStatus("dead");
+  }, [grid, player, status]);
 
   // Render loop (canvas)
   useEffect(() => {
@@ -41,14 +49,14 @@ export default function Game() {
 
     let raf = 0;
 
+    const cubeFill = "#111827";
+    const playerFill = "#22c55e";
+
     const draw = () => {
       ctx.clearRect(0, 0, c.width, c.height);
 
-      // estilos
       ctx.lineWidth = 1;
       ctx.strokeStyle = "#cfcfcf";
-      const cubeFill = "#111827";
-      const playerFill = "#22c55e";
 
       // tablero
       for (let y = 0; y < H; y++) {
@@ -63,7 +71,6 @@ export default function Game() {
             ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
           }
 
-          // overlay marcado
           if (marked[y][x]) {
             ctx.globalAlpha = 0.35;
             ctx.fillStyle = "#60a5fa";
@@ -78,7 +85,6 @@ export default function Game() {
             ctx.lineTo(px + 6, py + CELL - 6);
             ctx.stroke();
 
-            // restaurar
             ctx.strokeStyle = "#cfcfcf";
           }
         }
@@ -100,19 +106,31 @@ export default function Game() {
     return () => cancelAnimationFrame(raf);
   }, [grid, marked, player]);
 
-  // Controles (depende de player para que Space marque la celda correcta)
+  // Controles
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
 
       const k = e.key.toLowerCase();
 
+      // Si está muerto: solo R reinicia
+      if (status === "dead") {
+        if (k === "r") {
+          setGrid(makeGrid(true));
+          setMarked(makeMarks());
+          setPlayer({ x: Math.floor(W / 2), y: H - 2 });
+          setStatus("playing");
+        }
+        return;
+      }
+
+      // mover
       if (k === "arrowleft" || k === "a") setPlayer((p) => ({ ...p, x: clamp(p.x - 1, 0, W - 1) }));
       if (k === "arrowright" || k === "d") setPlayer((p) => ({ ...p, x: clamp(p.x + 1, 0, W - 1) }));
       if (k === "arrowup" || k === "w") setPlayer((p) => ({ ...p, y: clamp(p.y - 1, 0, H - 1) }));
       if (k === "arrowdown" || k === "s") setPlayer((p) => ({ ...p, y: clamp(p.y + 1, 0, H - 1) }));
 
-      // marcar con Space
+      // marcar
       if (k === " ") {
         setMarked((m) => {
           const copy = m.map((row) => row.slice());
@@ -120,17 +138,28 @@ export default function Game() {
           return copy;
         });
       }
+
+      // detonar
+      if (k === "enter") {
+        setGrid((g) =>
+          g.map((row, y) => row.map((cell, x) => (marked[y][x] ? false : cell)))
+        );
+        setMarked(makeMarks());
+      }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [player]);
+  }, [player, marked, status]);
 
   return (
     <div style={{ userSelect: "none", fontFamily: "system-ui, sans-serif" }}>
       <h1 style={{ margin: "8px 0" }}>Blockrunner</h1>
       <canvas ref={canvasRef} width={width} height={height} />
-      <div style={{ marginTop: 8 }}>Controles: Flechas/WASD · Space = marcar</div>
+      <div style={{ marginTop: 8 }}>
+        Controles: Flechas/WASD · Space = marcar · Enter = detonar · R = reiniciar
+        {status === "dead" && <span style={{ marginLeft: 12 }}>— GAME OVER</span>}
+      </div>
     </div>
   );
 }
