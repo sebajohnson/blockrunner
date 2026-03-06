@@ -6,19 +6,20 @@ type CubeType = "normal" | "green" | "black";
 
 type Cube = {
   id: number;
-  x: number;     // columna
-  y: number;     // posición continua en filas (0..H)
+  x: number;
+  y: number; // continuo
   type: CubeType;
-  alive: boolean;
 };
+
+type Mark = 0 | 1 | 2; // 0 none, 1 marked, 2 armed (detona cuando cubo pasa)
 
 const W = 10;
 const H = 14;
 const CELL = 34;
 
-const TICK_MS = 120;        // frecuencia de simulación
-const CUBE_SPEED = 0.08;    // filas por tick (ajusta feel)
-const SPAWN_EVERY = 8;      // ticks entre spawns (ajusta dificultad)
+const TICK_MS = 120;
+const CUBE_SPEED = 0.08;
+const SPAWN_EVERY = 8;
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
@@ -28,12 +29,11 @@ function makeFloor(fill = true) {
   return Array.from({ length: H }, () => Array.from({ length: W }, () => fill));
 }
 
-function makeMarks() {
-  return Array.from({ length: H }, () => Array.from({ length: W }, () => false));
+function makeMarks(): Mark[][] {
+  return Array.from({ length: H }, () => Array.from({ length: W }, () => 0 as Mark));
 }
 
 function randCubeType(): CubeType {
-  // por ahora: mayoría normales, pocos verdes/negros
   const r = Math.random();
   if (r < 0.10) return "green";
   if (r < 0.15) return "black";
@@ -48,13 +48,24 @@ export default function Game() {
 
   const [status, setStatus] = useState<Status>("playing");
   const [floor, setFloor] = useState<boolean[][]>(() => makeFloor(true));
-  const [marks, setMarks] = useState<boolean[][]>(() => makeMarks());
+  const [marks, setMarks] = useState<Mark[][]>(() => makeMarks());
   const [player, setPlayer] = useState<Pos>(() => ({ x: startX, y: startY }));
 
   const [cubes, setCubes] = useState<Cube[]>([]);
   const [tick, setTick] = useState(0);
 
   const nextIdRef = useRef(1);
+
+  // refs para evitar closures en el interval
+  const marksRef = useRef(marks);
+  const floorRef = useRef(floor);
+  const playerRef = useRef(player);
+  const cubesRef = useRef(cubes);
+
+  useEffect(() => { marksRef.current = marks; }, [marks]);
+  useEffect(() => { floorRef.current = floor; }, [floor]);
+  useEffect(() => { playerRef.current = player; }, [player]);
+  useEffect(() => { cubesRef.current = cubes; }, [cubes]);
 
   const width = useMemo(() => W * CELL, []);
   const height = useMemo(() => H * CELL, []);
@@ -66,64 +77,59 @@ export default function Game() {
     if (!under) setStatus("dead");
   }, [floor, player, status]);
 
-  // Loop de simulación: spawn + mover cubos + colisión con marcas
+  // Loop de simulación (interval estable)
   useEffect(() => {
     if (status !== "playing") return;
 
     const id = window.setInterval(() => {
       setTick((t) => t + 1);
 
-      // spawn
-      setCubes((prev) => {
-        const t = tick + 1;
-        if (t % SPAWN_EVERY !== 0) return prev;
+      // spawn usando tick ref (derivado del callback anterior)
+      const nextT = tick + 1;
+      if (nextT % SPAWN_EVERY === 0) {
+        setCubes((prev) => [
+          ...prev,
+          {
+            id: nextIdRef.current++,
+            x: Math.floor(Math.random() * W),
+            y: -0.8,
+            type: randCubeType(),
+          },
+        ]);
+      }
 
-        const x = Math.floor(Math.random() * W);
-        const cube: Cube = {
-          id: nextIdRef.current++,
-          x,
-          y: -0.8, // entra desde arriba
-          type: randCubeType(),
-          alive: true,
-        };
-        return [...prev, cube];
-      });
-
-      // mover y resolver colisiones
+      // mover + colisiones con ARMED
       setCubes((prev) => {
         const next: Cube[] = [];
 
         for (const c of prev) {
-          if (!c.alive) continue;
-
           const ny = c.y + CUBE_SPEED;
 
-          // si se va por el borde trasero -> cae (por ahora solo lo removemos)
+          // cae por el borde trasero: en Commit 17 castiga el suelo
           if (ny >= H) continue;
 
-          // celda bajo el cubo (cuando entra en fila >=0)
           const cy = Math.floor(ny);
           const cx = c.x;
 
-          let destroyed = false;
-
+          // colisión solo si hay suelo y el punto está ARMED
           if (cy >= 0 && cy < H) {
-            // si hay marca y hay suelo en esa celda, destruye cubo y consume marca
-            if (marks[cy]?.[cx] && floor[cy]?.[cx]) {
-              destroyed = true;
+            const hasFloor = floorRef.current[cy]?.[cx] === true;
+            const mark = marksRef.current[cy]?.[cx] ?? 0;
 
-              // consume la marca
+            if (hasFloor && mark === 2) {
+              // destruye cubo y consume marca
               setMarks((m) => {
-                const copy = m.map((row) => row.slice());
-                copy[cy][cx] = false;
+                const copy = m.map((row) => row.slice()) as Mark[][];
+                copy[cy][cx] = 0;
                 return copy;
               });
 
-              // efectos por tipo: los hacemos en Commit 16/17
+              // efectos green/black vienen después
+              continue;
             }
           }
 
-          if (!destroyed) next.push({ ...c, y: ny });
+          next.push({ ...c, y: ny });
         }
 
         return next;
@@ -131,7 +137,7 @@ export default function Game() {
     }, TICK_MS);
 
     return () => window.clearInterval(id);
-  }, [status, tick, marks, floor]);
+  }, [status, tick]);
 
   // Render canvas
   useEffect(() => {
@@ -149,13 +155,12 @@ export default function Game() {
     const cubeColor = (t: CubeType) => {
       if (t === "green") return "#22c55e";
       if (t === "black") return "#111111";
-      return "#6b7280"; // normal gris
+      return "#6b7280";
     };
 
     const draw = () => {
       ctx.clearRect(0, 0, c.width, c.height);
 
-      // suelo + marcas
       ctx.lineWidth = 1;
       ctx.strokeStyle = "#cfcfcf";
 
@@ -169,8 +174,10 @@ export default function Game() {
 
           ctx.strokeRect(px + 0.5, py + 0.5, CELL - 1, CELL - 1);
 
-          if (marks[y][x] && floor[y][x]) {
-            ctx.fillStyle = "#fbbf24";
+          const mark = marks[y][x];
+          if (mark !== 0 && floor[y][x]) {
+            // marked = azul, armed = rojo (solo visual)
+            ctx.fillStyle = mark === 1 ? "#60a5fa" : "#ef4444";
             ctx.beginPath();
             ctx.arc(px + CELL / 2, py + CELL / 2, CELL * 0.12, 0, Math.PI * 2);
             ctx.fill();
@@ -178,16 +185,13 @@ export default function Game() {
         }
       }
 
-      // cubos rodando
       for (const cube of cubes) {
         const px = cube.x * CELL;
-        const py = cube.y * CELL; // y continua
-
+        const py = cube.y * CELL;
         ctx.fillStyle = cubeColor(cube.type);
         ctx.fillRect(px + 5, py + 5, CELL - 10, CELL - 10);
       }
 
-      // jugador
       const ppx = player.x * CELL;
       const ppy = player.y * CELL;
       ctx.fillStyle = playerFill;
@@ -201,6 +205,15 @@ export default function Game() {
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
   }, [floor, marks, player, cubes]);
+
+  // Helper: hay cubo encima del jugador?
+  function cubeOnCell(px: number, py: number): Cube | null {
+    for (const c of cubesRef.current) {
+      const cy = Math.floor(c.y);
+      if (c.x === px && cy === py) return c;
+    }
+    return null;
+  }
 
   // Controles
   useEffect(() => {
@@ -229,11 +242,26 @@ export default function Game() {
       if (k === "arrowdown" || k === "s")
         setPlayer((p) => ({ ...p, y: clamp(p.y + 1, 0, H - 1) }));
 
-      // marcar bajo el jugador
       if (k === " ") {
+        const px = playerRef.current.x;
+        const py = playerRef.current.y;
+
+        // si hay cubo encima y el punto está marked -> armed
+        const onTop = cubeOnCell(px, py);
         setMarks((m) => {
-          const copy = m.map((row) => row.slice());
-          copy[player.y][player.x] = !copy[player.y][player.x];
+          const copy = m.map((row) => row.slice()) as Mark[][];
+          const cur = copy[py][px];
+
+          if (!floorRef.current[py]?.[px]) return copy;
+
+          if (onTop) {
+            // "deactivate" para destruir: solo si ya estaba marcado
+            if (cur === 1) copy[py][px] = 2;
+            return copy;
+          }
+
+          // marcar/desmarcar normal
+          copy[py][px] = cur === 0 ? 1 : 0;
           return copy;
         });
       }
@@ -241,7 +269,7 @@ export default function Game() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [status, player, startX, startY]);
+  }, [status, startX, startY]);
 
   return (
     <div style={{ userSelect: "none", fontFamily: "system-ui, sans-serif" }}>
@@ -249,7 +277,7 @@ export default function Game() {
       <canvas ref={canvasRef} width={width} height={height} />
 
       <div style={{ marginTop: 8 }}>
-        Controles: Flechas/WASD (mover) · Space (marcar bajo el jugador) · R (reiniciar)
+        Controles: Flechas/WASD (mover) · Space (marcar / activar bajo el cubo) · R (reiniciar)
         {status === "dead" && <span style={{ marginLeft: 12 }}>— GAME OVER</span>}
       </div>
 
