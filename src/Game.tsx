@@ -11,7 +11,7 @@ type Cube = {
     type: CubeType;
 };
 
-type Mark = 0 | 1 | 2; // 0 none, 1 marked, 2 armed (detona cuando cubo pasa)
+type Mark = 0 | 1; // 0 none, 1 marked, 2 armed (detona cuando cubo pasa)
 
 const W = 10;
 const H = 14;
@@ -82,6 +82,7 @@ export default function Game() {
         if (status !== "playing") return;
 
         const id = window.setInterval(() => {
+            // tick + spawn determinista
             setTick((t) => {
                 const nextT = t + 1;
 
@@ -100,31 +101,15 @@ export default function Game() {
                 return nextT;
             });
 
-            // mover + colisiones con ARMED
+            // mover cubos (sin detonación automática)
             setCubes((prev) => {
                 const next: Cube[] = [];
 
                 for (const c of prev) {
                     const ny = c.y + CUBE_SPEED;
 
+                    // cae por el borde trasero (por ahora solo desaparece)
                     if (ny >= H) continue;
-
-                    const cy = Math.floor(ny);
-                    const cx = c.x;
-
-                    if (cy >= 0 && cy < H) {
-                        const hasFloor = floorRef.current[cy]?.[cx] === true;
-                        const mark = marksRef.current[cy]?.[cx] ?? 0;
-
-                        if (hasFloor && mark === 2) {
-                            setMarks((m) => {
-                                const copy = m.map((row) => row.slice()) as Mark[][];
-                                copy[cy][cx] = 0;
-                                return copy;
-                            });
-                            continue;
-                        }
-                    }
 
                     next.push({ ...c, y: ny });
                 }
@@ -174,7 +159,7 @@ export default function Game() {
                     const mark = marks[y][x];
                     if (mark !== 0 && floor[y][x]) {
                         // marked = azul, armed = rojo (solo visual)
-                        ctx.fillStyle = mark === 1 ? "#60a5fa" : "#ef4444";
+                        ctx.fillStyle = "#60a5fa";
                         ctx.beginPath();
                         ctx.arc(px + CELL / 2, py + CELL / 2, CELL * 0.12, 0, Math.PI * 2);
                         ctx.fill();
@@ -203,17 +188,12 @@ export default function Game() {
         return () => cancelAnimationFrame(raf);
     }, [floor, marks, player, cubes]);
 
-    // Helper: hay cubo encima del jugador?
-    function cubeOnCell(px: number, py: number): Cube | null {
+    function findCubeOnMarkedCell(): { cube: Cube; x: number; y: number } | null {
         for (const c of cubesRef.current) {
-            if (c.x !== px) continue;
-
-            // centro del cubo en coordenadas de grilla
-            const cubeCenterY = c.y + 0.5;
-            const cellCenterY = py + 0.5;
-
-            // si el centro está "cerca", lo consideramos encima
-            if (Math.abs(cubeCenterY - cellCenterY) < 0.35) return c;
+            const cy = Math.floor(c.y + 0.5); // centro del cubo
+            const cx = c.x;
+            if (cy < 0 || cy >= H) continue;
+            if (marksRef.current[cy]?.[cx] === 1) return { cube: c, x: cx, y: cy };
         }
         return null;
     }
@@ -246,30 +226,30 @@ export default function Game() {
                 setPlayer((p) => ({ ...p, y: clamp(p.y + 1, 0, H - 1) }));
 
             if (k === " ") {
+                // 1) si hay cubo sobre una marca, detona (sin importar dónde esté el jugador)
+                const hit = findCubeOnMarkedCell();
+                if (hit) {
+                    // destruir cubo
+                    setCubes((prev) => prev.filter((c) => c.id !== hit.cube.id));
+
+                    // consumir la marca
+                    setMarks((m) => {
+                        const copy = m.map((row) => row.slice()) as Mark[][];
+                        copy[hit.y][hit.x] = 0;
+                        return copy;
+                    });
+
+                    return;
+                }
+
+                // 2) si no hay detonación posible, marca/desmarca bajo tus pies
                 const px = playerRef.current.x;
                 const py = playerRef.current.y;
 
-                // si hay cubo encima y el punto está marked -> armed
-                const onTop = cubeOnCell(px, py);
                 setMarks((m) => {
                     const copy = m.map((row) => row.slice()) as Mark[][];
-                    const cur = copy[py][px];
-
                     if (!floorRef.current[py]?.[px]) return copy;
-
-                    if (onTop) {
-                        if (cur === 1) {
-                            // consumir marca de inmediato
-                            copy[py][px] = 0;
-
-                            // eliminar cubo inmediatamente
-                            setCubes((prev) => prev.filter((c) => c.id !== onTop.id));
-                        }
-                        return copy;
-                    }
-
-                    // marcar/desmarcar normal
-                    copy[py][px] = cur === 0 ? 1 : 0;
+                    copy[py][px] = copy[py][px] === 0 ? 1 : 0;
                     return copy;
                 });
             }
